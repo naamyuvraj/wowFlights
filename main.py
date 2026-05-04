@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from groq import Groq
 from dotenv import load_dotenv
+import requests
 
 load_dotenv()
 api_key =os.getenv("GROQ_API_KEY")
@@ -19,41 +20,58 @@ class FlightRequest(BaseModel):
     departure_date: str
 
 
-def get_mock_flights(origin: str, destination: str, departure_date: str):
+def get_live_flights(origin: str, destination: str, departure_date: str):
     print (f'Executing tool for {origin} to {destination} on {departure_date}')
-    mock_database_response = [
-        {"airline": "SkyHigh Airways", "flight_number": "SH123", "price": "$350", "duration": "4h 15m"},
-        {"airline": "Oceanic Airlines", "flight_number": "OA815", "price": "$410", "duration": "3h 50m"}
-    ]
-    return json.dumps(mock_database_response)
+
+    api_key = os.getenv("SERPAPI_KEY")
+    if not api_key:
+        raise ValueError("SERPAPI_KEY not found in environment variables.")
+    params = {
+            "engine": "google_flights",
+            "departure_id": origin,     # e.g., 'SFO'
+            "arrival_id": destination,  # e.g., 'JFK'
+            "outbound_date": departure_date, # Format: 'YYYY-MM-DD'
+            "currency": "INR",
+            "hl": "en",
+            "api_key": api_key
+        }
+    try:
+        response = requests.get('https://serpapi.com/search', params=params)
+        data=response.json()
+        best_flight = data.get('best_flights', [])[:5]
+
+        cleaned_flights = []
+        for flight in best_flight:
+            flight_details = best_flight.get('flight', [{}])[0]
+            cleaned_flights.append({
+                "airline": flight_details.get('airline', 'N/A'),
+                "flight_number": flight_details.get('flight_number', 'N/A'),
+                "price": f"₹{flight.get('price', 'N/A')}",
+                'duration': flight.get('duration', 'N/A')})
+        return json.dumps(cleaned_flights)
+    except Exception as e:
+        print(f"Error fetching flight data: {e}")
+        return json.dumps({"error": "Failed to fetch flight data."})
 
 flight_tools = [
     {
         "type": "function",
         "function": {
-            "name": "get_mock_flights",
-            "description": "Fetch live, real-time flight options, prices, and durations between two cities for a specific date.",
+            "name": "get_live_flights",
+            "description": "Fetch LIVE, real-time Google Flights options and pricing. Use this whenever the user asks for flights.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "origin": {
-                        "type": "string",
-                        "description": "The starting city or airport code."
-                    },
-                    "destination": {
-                        "type": "string",
-                        "description": "The destination city or airport code."
-                    },
-                    "departure_date": {
-                        "type": "string",
-                        "description": "The date of departure."
-                    }
+                    "origin": {"type": "string", "description": "3-letter airport code"},
+                    "destination": {"type": "string", "description": "3-letter airport code"},
+                    "departure_date": {"type": "string", "description": "YYYY-MM-DD format"}
                 },
                 "required": ["origin", "destination", "departure_date"]
             }
         }
     }
 ]
+
 
 @app.post('/api/flights')
 async def get_flights(request: FlightRequest):
@@ -80,8 +98,8 @@ async def get_flights(request: FlightRequest):
             for tool_call in response_content.tool_calls:
                 function_name = tool_call.function.name
                 arguments = json.loads(tool_call.function.arguments)
-                if function_name == "get_mock_flights":
-                    tool_response = get_mock_flights(
+                if function_name == "get_live_flights":
+                    tool_response = get_live_flights(
                         origin=arguments.get('origin'),
                         destination=arguments.get('destination'),
                         departure_date=arguments.get('departure_date')
